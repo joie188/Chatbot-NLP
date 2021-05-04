@@ -241,8 +241,9 @@ class Ju2Jo(tga.TorchGeneratorModel):
             end_idx=dictionary[dictionary.end_token],
             unknown_idx=dictionary[dictionary.unk_token],
         )
+        attention = BahdanauAttention(hidden_size)
         self.embeddings = nn.Embedding(len(dictionary), hidden_size)
-        self.encoder = Encoder(self.embeddings, hidden_size, num_layers=numlayers, dropout=dropout) #Encoder(self.embeddings, hidden_size)
+        self.encoder = Encoder(self.embeddings, hidden_size, num_layers=num_layers, dropout=dropout) #Encoder(self.embeddings, hidden_size)
         self.decoder = Decoder(self.embeddings, hidden_size, attention, num_layers=num_layers, dropout=dropout) #Decoder(self.embeddings, hidden_size)
 
     def output(self, decoder_output):
