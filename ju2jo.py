@@ -82,7 +82,8 @@ class Decoder(nn.Module):
         self.num_layers = num_layers
         self.attention = attention
         self.dropout = dropout
-                 
+
+        self.trg_embed = nn.Embedding(vocab_size, emb_size)
         self.rnn = nn.LSTM(emb_size + 2*hidden_size, hidden_size, num_layers,
                           batch_first=True, dropout=dropout)
                  
@@ -94,6 +95,7 @@ class Decoder(nn.Module):
                                           hidden_size, bias=False)
         
      def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
+
         """Perform a single decoder step (1 word)"""
 
         # compute context vector using attention mechanism
@@ -113,13 +115,14 @@ class Decoder(nn.Module):
 
         return output, hidden, pre_output
     
-     def forward(self, trg_embed, encoder_hidden, encoder_final, 
-                src_mask, trg_mask, hidden=None, max_len=None):
+    #  def forward(self, trg_embed, encoder_hidden, encoder_final, 
+    #             src_mask, trg_mask, hidden=None, max_len=None):
+     def forward(self, inputs, encoder_hidden, encoder_final, src_mask,
+                hidden=None, max_len=None):
         """Unroll the decoder one step at a time."""
-                                         
         # the maximum number of steps to unroll the RNN
         if max_len is None:
-            max_len = trg_mask.size(-1)
+            max_len = inputs.size(1)
 
         # initialize decoder hidden state
         if hidden is None:
@@ -129,6 +132,8 @@ class Decoder(nn.Module):
         # (the "keys" for the attention mechanism)
         # this is only done for efficiency
         proj_key = self.attention.key_layer(encoder_hidden)
+
+        inputs = self.trg_embed(inputs) #help?????????/
         
         # here we store all intermediate hidden states and pre-output vectors
         decoder_states = []
@@ -136,7 +141,7 @@ class Decoder(nn.Module):
         
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
-            prev_embed = trg_embed[:, i].unsqueeze(1)
+            prev_embed = inputs[:, i].unsqueeze(1)
             output, hidden, pre_output = self.forward_step(
               prev_embed, encoder_hidden, src_mask, proj_key, hidden)
             decoder_states.append(output)
@@ -183,7 +188,7 @@ class BahdanauAttention(nn.Module):
         # Calculate scores.
         scores = self.energy_layer(torch.tanh(query + proj_key))
         scores = scores.squeeze(2).unsqueeze(1)
-        
+
         # Mask out invalid positions.
         # The mask marks valid positions so we invert it using `mask & 0`.
         scores.data.masked_fill_(mask == 0, -float('inf'))
@@ -215,10 +220,12 @@ class Ju2Jo(tga.TorchGeneratorModel):
             end_idx=dictionary[dictionary.end_token],
             unknown_idx=dictionary[dictionary.unk_token],
         )
-        attention = BahdanauAttention(hidden_size)
+        self.attention = BahdanauAttention(hidden_size)
         self.embeddings = nn.Embedding(len(dictionary), hidden_size)
-        self.encoder = Encoder(len(dictionary), emb_size, hidden_size, num_layers=num_layers, dropout=dropout) 
-        self.decoder = Decoder(len(dictionary), emb_size, hidden_size, attention, num_layers=num_layers, dropout=dropout) 
+        self.encoder = Encoder(len(dictionary), emb_size, hidden_size, 
+                                num_layers=num_layers, dropout=dropout) 
+        self.decoder = Decoder(len(dictionary), emb_size, hidden_size, self.attention, 
+                                num_layers=num_layers, dropout=dropout) 
 
     def output(self, decoder_output):
         """
@@ -245,6 +252,49 @@ class Ju2Jo(tga.TorchGeneratorModel):
         """
         h, c = incr_state
         return h[:, indices, :], c[:, indices, :]
+
+
+    def forward(self, *xs, ys=None, prev_enc=None, maxlen=None, bsz=None):
+        """
+        Get output predictions from the model.
+        :param xs:
+            input to the encoder, LongTensor[bsz, seqlen]
+        :param ys:
+            Expected output from the decoder. Used for teacher forcing to calculate loss, LongTensor[bsz, outlen]
+        :param prev_enc:
+            if you know you'll pass in the same xs multiple times, you can pass
+            in the encoder output from the last forward pass to skip
+            recalcuating the same encoder output.
+        :param maxlen:
+            max number of tokens to decode. if not set, will use the length of
+            the longest label this model has seen. ignored when ys is not None.
+        :param bsz:
+            if ys is not provided, then you must specify the bsz for greedy decoding.
+        :return:
+            (scores, candidate_scores, encoder_states) tuple
+            - scores contains the model's predicted token scores.
+              (FloatTensor[bsz, seqlen, num_features])
+            - candidate_scores are the score the model assigned to each candidate.
+              (FloatTensor[bsz, num_cands])
+            - encoder_states are the output of model.encoder. Model specific types.
+              Feed this back in to skip encoding on the next call.
+        """
+
+        assert ys is not None, "Greedy decoding in TGModel.forward no longer supported."
+ 
+        # # we'll never produce longer ones than that during prediction
+        self.longest_label = max(self.longest_label, ys.size(1))
+
+        encoder_hidden, encoder_final = self.encoder(*xs)
+        src_mask = (xs[0] != 0).long().unsqueeze(-2)
+        return self.decoder(ys, encoder_hidden, encoder_final, src_mask)
+
+        # # use cached encoding if available
+        # encoder_states = prev_enc if prev_enc is not None else self.encoder(*xs)
+
+        # # use teacher forcing
+        # scores, preds = self.decode_forced(encoder_states, ys)
+        # return scores, preds, encoder_states
 
 
 class Ju2joAgent(tga.TorchGeneratorAgent):
