@@ -4,7 +4,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-r"""
+"""
 Example TorchGeneratorAgent model.
 
 This demonstrates the minimal structure of a building a generative model, consisting of
@@ -29,41 +29,53 @@ different beam lengths.
 from typing import Optional
 from parlai.core.params import ParlaiParser
 from parlai.core.opt import Opt
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import parlai.core.torch_generator_agent as tga
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
 class Encoder(nn.Module):
     """Encodes a sequence of word embeddings"""
-    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.):
+
+    def __init__(self, vocab_size, input_size, hidden_size, num_layers=1, dropout=0.):
         super(Encoder, self).__init__()
         self.num_layers = num_layers
-        self.rnn = nn.LSTM(input_size, hidden_size, num_layers, 
+        self.src_embed = nn.Embedding(vocab_size, input_size)
+        self.rnn = nn.LSTM(input_size, hidden_size, num_layers,
                           batch_first=True, bidirectional=True, dropout=dropout)
-        
-    def forward(self, x, mask, lengths):
+
+    def forward(self, x):
         """
         Applies a bidirectional LSTM to sequence of embeddings x.
         The input mini-batch x needs to be sorted by length.
         x should have dimensions [batch, time, dim].
+                                [batch, seq_len, embed_size]
         """
-        packed = pack_padded_sequence(x, lengths, batch_first=True)
+        lengths = torch.argmax((x==0).long(), dim=1)
+        lengths -= 1
+        lengths[lengths==-1] = x.shape[1]
+        
+        x = self.src_embed(x)
+
+        packed = pack_padded_sequence(x, list(lengths), batch_first=True, enforce_sorted=False)
         output, (final, _) = self.rnn(packed)
         output, _ = pad_packed_sequence(output, batch_first=True)
 
         # we need to manually concatenate the final states for both directions
         fwd_final = final[0:final.size(0):2]
         bwd_final = final[1:final.size(0):2]
-        final = torch.cat([fwd_final, bwd_final], dim=2)  # [num_layers, batch, 2*dim]
+        # [num_layers, batch, 2*dim]
+        final = torch.cat([fwd_final, bwd_final], dim=2)
 
         return output, final
 
+
 class Decoder(nn.Module):
      """A conditional RNN decoder with attention."""
-    
-    def __init__(self, emb_size, hidden_size, attention, num_layers=1, dropout=0.5,
-                 bridge=True):
+
+     def __init__(self, vocab_size, emb_size, hidden_size, attention, num_layers=1, dropout=0.5, bridge=True):
         super(Decoder, self).__init__()
         
         self.hidden_size = hidden_size
@@ -81,7 +93,7 @@ class Decoder(nn.Module):
         self.pre_output_layer = nn.Linear(hidden_size + 2*hidden_size + emb_size,
                                           hidden_size, bias=False)
         
-    def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
+     def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
         """Perform a single decoder step (1 word)"""
 
         # compute context vector using attention mechanism
@@ -101,7 +113,7 @@ class Decoder(nn.Module):
 
         return output, hidden, pre_output
     
-    def forward(self, trg_embed, encoder_hidden, encoder_final, 
+     def forward(self, trg_embed, encoder_hidden, encoder_final, 
                 src_mask, trg_mask, hidden=None, max_len=None):
         """Unroll the decoder one step at a time."""
                                          
@@ -134,7 +146,7 @@ class Decoder(nn.Module):
         pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
         return decoder_states, hidden, pre_output_vectors  # [B, N, D]
 
-    def init_hidden(self, encoder_final):
+     def init_hidden(self, encoder_final):
         """Returns the initial decoder state,
         conditioned on the final encoder state."""
 
@@ -187,19 +199,6 @@ class BahdanauAttention(nn.Module):
         return context, alphas
 
 
-def make_model(src_vocab, tgt_vocab, emb_size=256, hidden_size=512, num_layers=1, dropout=0.1):
-    "Helper: Construct a model from hyperparameters."
-
-    attention = BahdanauAttention(hidden_size)
-
-    model = EncoderDecoder(
-        Encoder(emb_size, hidden_size, num_layers=num_layers, dropout=dropout),
-        Decoder(emb_size, hidden_size, attention, num_layers=num_layers, dropout=dropout),
-        nn.Embedding(src_vocab, emb_size),
-        nn.Embedding(tgt_vocab, emb_size),
-        Generator(hidden_size, tgt_vocab))
-
-    return model.cuda() if USE_CUDA else model
 
 class Ju2Jo(tga.TorchGeneratorModel):
     """
@@ -209,7 +208,7 @@ class Ju2Jo(tga.TorchGeneratorModel):
     final output layer.
     """
 
-    def __init__(self, dictionary, hidden_size=1024, num_layers=1, dropout=0):
+    def __init__(self, dictionary, hidden_size=1024, emb_size=256, num_layers=1, dropout=0):
         super().__init__(
             padding_idx=dictionary[dictionary.null_token],
             start_idx=dictionary[dictionary.start_token],
@@ -218,8 +217,8 @@ class Ju2Jo(tga.TorchGeneratorModel):
         )
         attention = BahdanauAttention(hidden_size)
         self.embeddings = nn.Embedding(len(dictionary), hidden_size)
-        self.encoder = Encoder(self.embeddings, hidden_size, num_layers=num_layers, dropout=dropout) #Encoder(self.embeddings, hidden_size)
-        self.decoder = Decoder(self.embeddings, hidden_size, attention, num_layers=num_layers, dropout=dropout) #Decoder(self.embeddings, hidden_size)
+        self.encoder = Encoder(len(dictionary), emb_size, hidden_size, num_layers=num_layers, dropout=dropout) 
+        self.decoder = Decoder(len(dictionary), emb_size, hidden_size, attention, num_layers=num_layers, dropout=dropout) 
 
     def output(self, decoder_output):
         """
@@ -248,19 +247,18 @@ class Ju2Jo(tga.TorchGeneratorModel):
         return h[:, indices, :], c[:, indices, :]
 
 
-class Seq2seqAgent(tga.TorchGeneratorAgent):
+class Ju2joAgent(tga.TorchGeneratorAgent):
 
     @classmethod
     def add_cmdline_args(cls, argparser, partial_opt=None):
         super().add_cmdline_args(argparser, partial_opt=partial_opt)
         group = argparser.add_argument_group('Example TGA Agent')
-        group.add_argument(
-            '-hid', '--hidden-size', type=int, default=1024, help='Hidden size.')
+        group.add_argument('-hid', '--hidden-size', type=int, default=1024, help='Hidden size.')
         group.add_argument('-nl', '--num-layers', type=int, default=1, help='Number of layers in Encoder and Decoder.')
         group.add_argument('-d', '--dropout', type=float, default=0., help='Dropout.')
 
     def build_model(self):
-        model = ExampleModel(self.dict, self.opt['hidden_size'])
+        model = Ju2Jo(self.dict, self.opt['hidden_size'])
         if self.opt['embedding_type'] != 'random':
             self._copy_embeddings(
                 model.embeddings.weight, self.opt['embedding_type']
