@@ -222,6 +222,8 @@ class Ju2Jo(tga.TorchGeneratorModel):
         )
         self.attention = BahdanauAttention(hidden_size)
         self.embeddings = nn.Embedding(len(dictionary), hidden_size)
+        self.proj = nn.Linear(hidden_size, len(dictionary), bias=False)
+        self.output = nn.Linear(emb_size, len(dictionary))
         self.encoder = Encoder(len(dictionary), emb_size, hidden_size, 
                                 num_layers=num_layers, dropout=dropout) 
         self.decoder = Decoder(len(dictionary), emb_size, hidden_size, self.attention, 
@@ -231,7 +233,9 @@ class Ju2Jo(tga.TorchGeneratorModel):
         """
         Perform the final output -> logits transformation.
         """
-        return F.linear(decoder_output, self.embeddings.weight)
+        # return F.linear(decoder_output, self.embeddings.weight)
+        res = self.proj(decoder_output)
+        return res
 
     def reorder_encoder_states(self, encoder_states, indices):
         """
@@ -287,7 +291,11 @@ class Ju2Jo(tga.TorchGeneratorModel):
 
         encoder_hidden, encoder_final = self.encoder(*xs)
         src_mask = (xs[0] != 0).long().unsqueeze(-2)
-        return self.decoder(ys, encoder_hidden, encoder_final, src_mask)
+
+        decoder_states, hidden, preoutputs = self.decoder(ys, encoder_hidden, encoder_final, src_mask)
+        logits = self.output(decoder_states)
+        _, preds = logits.max(dim=2)
+        return logits, preds, encoder_hidden
 
         # # use cached encoding if available
         # encoder_states = prev_enc if prev_enc is not None else self.encoder(*xs)
