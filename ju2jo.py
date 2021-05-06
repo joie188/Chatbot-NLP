@@ -106,7 +106,7 @@ class Decoder(nn.Module):
 
         # update rnn hidden state
         rnn_input = torch.cat([prev_embed, context], dim=2)
-        output, (final, _) = self.rnn(rnn_input, (hidden, torch.zeros(hidden.size())))
+        output, (final, _) = self.rnn(rnn_input, (hidden, torch.zeros(hidden.size()).cuda()))
         # output, hidden = self.rnn(rnn_input, hidden)
         
         pre_output = torch.cat([prev_embed, output, context], dim=2)
@@ -124,9 +124,12 @@ class Decoder(nn.Module):
         if max_len is None:
             max_len = inputs.size(1)
 
+        # print('hidden before:', hidden)
         # initialize decoder hidden state
         if hidden is None:
+            # print('encoder final:', encoder_final)
             hidden = self.init_hidden(encoder_final)
+        # print('hidden:', hidden)
         
         # pre-compute projected encoder hidden states
         # (the "keys" for the attention mechanism)
