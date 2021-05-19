@@ -670,6 +670,10 @@ class AttentionLayer(nn.Module):
                 seqlen = self.max_length
             if attn_weights.size(1) > seqlen:
                 attn_weights = attn_weights.narrow(1, 0, seqlen)
+        elif self.attention == "bahdanau":
+            query = self.query_layer(hidden)
+            proj_key = self.key_layer(enc_out)
+            attn_w_premask  = self.energy_layer(torch.tanh(query + proj_key)).squeeze(2)
         else:
             hid = last_hidden.unsqueeze(1)
             if self.attention == 'concat':
@@ -692,10 +696,6 @@ class AttentionLayer(nn.Module):
                 hid = self.attn(hid)
                 enc_t = enc_out.transpose(1, 2)
                 attn_w_premask = torch.bmm(hid, enc_t).squeeze(1)
-            elif self.attention == 'bahdanau':
-                query = self.query_layer(hid)
-                proj_key = self.key_layer(enc_out)
-                attn_w_premask  = self.energy_layer(torch.tanh(query + proj_key)).squeeze(2)
 
             # calculate activation scores, apply mask if needed
             if attn_mask is not None:
